@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>專業估價工具 v6.1.3 - RVD原始檔及平均模式版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        input, select { border: 1px solid #d1d5db; padding: 6px; border-radius: 4px; width: 100%; font-size: 0.9rem; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); margin-bottom: 20px; border: 1px solid #e5e7eb; }
+        .drop-zone { border: 2px dashed #3b82f6; background: #eff6ff; transition: all 0.3s; }
+        .drop-zone.dragover { background: #dbeafe; transform: scale(1.01); }
+        .outlier { background-color: #fee2e2 !important; border-left: 4px solid #ef4444; }
+        @media print {
+            .no-print { display: none !important; }
+            body { background: white; padding: 0; }
+            .card { box-shadow: none; border: 1px solid #eee; break-inside: avoid; }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 p-4 md:p-8">
+
+    <header class="max-w-7xl mx-auto mb-6 flex flex-col md:flex-row justify-between items-end gap-4">
+        <div>
+            <h1 class="text-3xl font-bold text-blue-900">住宅物業估價工具 v6.1.3</h1>
+            <p class="text-gray-500">新增 Size Factor | 可讀取RVD原始檔 | 可選加權/普通平均</p>
+        </div>
+        <div class="no-print flex space-x-2">
+            <button onclick="clearStorage()" class="text-sm text-red-600 hover:underline self-center mr-2">重設暫存</button>
+            <button onclick="exportToCSV()" class="bg-green-700 text-white px-4 py-2 rounded font-bold hover:bg-green-800 shadow">💾 匯出專業 CSV</button>
+            <button onclick="window.print()" class="bg-blue-600 text-white px-5 py-2 rounded font-bold hover:bg-blue-700 shadow">🖨️ 列印報告</button>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto">
+        <section class="card">
+            <h2 class="text-xl font-semibold mb-4 border-b pb-2 text-blue-700">Step 1: 主體物業與類別設定</h2>
+            <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
+                <div class="col-span-2"><label class="text-xs font-bold">估價地址</label><input type="text" id="sub-address" class="store" value="太古城 金星閣"></div>
+                <div><label class="text-xs font-bold">估價日期</label><input type="date" id="sub-date" class="store" value="2026-05-01" onchange="calculateValuation()"></div>
+                <div>
+                    <label class="text-xs font-bold">RVD 類別 (按面積)</label>
+                    <select id="sub-rvd-class" class="store" onchange="calculateValuation()">
+                        <option value="ABC">ABC Class (< 100m²)</option>
+                        <option value="DE">DE Class (≥ 100m²)</option>
+                        <option value="ALL">ALL Class (綜合)</option>
+                    </select>
+                </div>
+                <div><label class="text-xs font-bold">樓層/落成</label>
+                    <div class="flex space-x-1">
+                        <input type="number" id="sub-floor" class="store" value="20" onchange="calculateValuation()">
+                        <input type="number" id="sub-year" class="store" value="1990" onchange="calculateValuation()">
+                    </div>
+                </div>
+                <div><label class="text-xs font-bold">面積(sf)/樓底(m)</label>
+                    <div class="flex space-x-1">
+                        <input type="number" id="sub-area" class="store" value="580" onchange="calculateValuation()">
+                        <input type="number" id="sub-height" class="store" step="0.1" value="2.8" onchange="calculateValuation()">
+                    </div>
+                </div>
+                <div><label class="text-xs font-bold">主體景觀</label>
+                    <select id="sub-view" class="store" onchange="updateViewSettingsUI();">
+                        <option value="樓景">樓景</option><option value="開揚市景">開揚市景</option><option value="山景">山景</option><option value="海景">海景</option>
+                    </select>
+                </div>
+            </div>
+        </section>
+
+        <section class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6 no-print">
+            <div id="drop-rvd" class="drop-zone p-6 rounded-lg text-center cursor-pointer">
+                <p class="text-blue-700 font-bold">📈 拖放 RVD 指數 Excel</p>
+                <p class="text-[10px] text-gray-500">支援簡表或RVD原始檔：Monthly按月、ABC / D&E / ALL</p>
+                <input type="file" id="rvd-upload" class="hidden" accept=".xlsx, .xls">
+            </div>
+            <div id="drop-comp" class="drop-zone p-6 rounded-lg text-center cursor-pointer">
+                <p class="text-blue-700 font-bold">📁 拖放成交數據庫 (MWPIC)</p>
+                <p class="text-[10px] text-gray-500">自動讀取期數(PHASE)、屋苑/大廈中英文名稱</p>
+                <input type="file" id="excel-upload" class="hidden" accept=".xlsx, .xls">
+            </div>
+        </section>
+
+        <section class="card">
+            <h2 class="text-xl font-semibold mb-4 border-b pb-2 text-blue-700">Step 3: 比較準則與屋苑設定</h2>
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div class="bg-gray-50 p-4 rounded border">
+                    <h3 class="font-bold text-sm mb-3">A. 物理因素與預設指數</h3>
+                    <div class="grid grid-cols-2 lg:grid-cols-3 gap-3">
+                        <div><label class="text-[10px]">預設 RVD</label><input type="number" id="rvd-fallback" class="store" value="380" onchange="calculateValuation()"></div>
+                        <div><label class="text-[10px]">樓齡 (%/年)</label><input type="number" id="adj-age" class="store" value="-1" step="0.1" onchange="calculateValuation()"></div>
+                        <div><label class="text-[10px]">樓層 (%/層)</label><input type="number" id="adj-floor" class="store" value="0.5" step="0.1" onchange="calculateValuation()"></div>
+                        <div><label class="text-[10px]">樓底 (%/0.1m)</label><input type="number" id="adj-height" class="store" value="1.0" step="0.1" onchange="calculateValuation()"></div>
+                        <div><label class="text-[10px] text-blue-600 font-bold">面積 (%/10sf)</label><input type="number" id="adj-size" class="store" value="0.2" step="0.1" onchange="calculateValuation()"></div>
+                            <div><label class="text-[10px] text-green-700 font-bold">平均模式</label><select id="avg-mode" class="store" onchange="calculateValuation()"><option value="weighted" selected>加權平均</option><option value="simple">普通平均</option></select></div>
+                    </div>
+                </div>
+                <div class="bg-blue-50 p-4 rounded border border-blue-100">
+                    <h3 class="font-bold text-sm mb-3">B. 景觀動態調算</h3>
+                    <div id="view-settings-container" class="grid grid-cols-2 gap-3"></div>
+                    <p class="text-[9px] text-blue-500 mt-2 font-semibold">註：若成交優於主體，請入負數(-%)向下調算。</p>
+                </div>
+                <div class="bg-purple-50 p-4 rounded border border-purple-100 overflow-y-auto max-h-[180px]">
+                    <h3 class="font-bold text-sm mb-3">C. 屋苑統一定性 (地點/設施/樓底)</h3>
+                    <div id="estate-settings-container" class="space-y-2 text-sm text-gray-500 italic">上載數據後顯示...</div>
+                </div>
+            </div>
+        </section>
+
+        <section class="card">
+            <h2 class="text-xl font-semibold mb-4 border-b pb-2 text-blue-700">Step 4: 可比物業列表</h2>
+            <div class="overflow-x-auto">
+                <table class="w-full text-xs text-left border-collapse" id="comp-table">
+                    <thead>
+                        <tr class="bg-gray-200 border-b">
+                            <th class="p-2 no-print w-10 text-center">採用</th>
+                            <th class="p-2 w-1/4">屋苑(期數)/街道/備註</th>
+                            <th class="p-2 w-1/6">日期與面積</th>
+                            <th class="p-2">原實用尺價</th>
+                            <th class="p-2 w-1/6">個別景觀/樓底</th>
+                            <th class="p-2">詳細調算倍數</th>
+                            <th class="p-2 text-right">調整後尺價 (權重)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="comp-body">
+                        <tr><td colspan="7" class="p-4 text-center text-gray-500">尚未載入成交數據</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-10">
+            <div class="lg:col-span-2 card bg-gray-900 text-white flex flex-col justify-between">
+                <div>
+                    <h2 class="text-lg font-bold border-b border-gray-700 pb-2 mb-4">Step 5: 估價總結 (智能加權)</h2>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div><p class="text-gray-400" id="avg-unit-price-label">加權平均調整尺價</p><p class="text-3xl font-mono text-blue-400" id="avg-unit-price">$ 0</p></div>
+                        <div><p class="text-gray-400">主體物業估算總值</p><p class="text-3xl font-mono text-green-400" id="total-value">$ 0</p></div>
+                    </div>
+                </div>
+                <div id="estate-breakdown" class="mt-6 grid grid-cols-2 md:grid-cols-4 gap-2 border-t border-gray-700 pt-4"></div>
+            </div>
+            <div class="card bg-white no-print">
+                <h2 class="text-sm font-bold mb-2 text-gray-700">調算分佈可視化 (散佈圖)</h2>
+                <canvas id="valuationChart" height="200"></canvas>
+            </div>
+        </section>
+
+    </main>
+
+    <script>
+        let comparables = [], rvdData = {}, estateGroupSettings = {}, estateCollapsed = {}, uniqueEstates = [], valuationChart = null;
+        const VIEWS = ['樓景', '開揚市景', '山景', '海景'];
+
+        window.onload = () => {
+            loadFromStorage();
+            initDragAndDrop();
+            updateViewSettingsUI();
+            if(comparables.length > 0) renderTable();
+        };
+
+        function initDragAndDrop() {
+            const setups = [
+                {id: 'drop-rvd', input: 'rvd-upload', fn: handleRVD},
+                {id: 'drop-comp', input: 'excel-upload', fn: handleComp}
+            ];
+            setups.forEach(s => {
+                const el = document.getElementById(s.id);
+                const inputEl = document.getElementById(s.input);
+                el.onclick = () => inputEl.click();
+                el.ondragover = (e) => { e.preventDefault(); el.classList.add('dragover'); };
+                el.ondragleave = () => el.classList.remove('dragover');
+                el.ondrop = (e) => {
+                    e.preventDefault(); el.classList.remove('dragover');
+                    if(e.dataTransfer.files[0]) s.fn(e.dataTransfer.files[0]);
+                };
+                inputEl.onchange = (e) => { if(e.target.files[0]) s.fn(e.target.files[0]); };
+            });
+        }
+
+        function handleRVD(file) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const wb = XLSX.read(e.target.result, {type:'binary', cellDates:true});
+                    const monthlySheetName = wb.SheetNames.find(n => String(n).toLowerCase().includes('monthly') || String(n).includes('按月')) || wb.SheetNames[0];
+                    const rows = XLSX.utils.sheet_to_json(wb.Sheets[monthlySheetName], {header:1, defval:"", raw:true});
+                    const parsed = parseRVDRows(rows);
+                    if (!parsed || Object.keys(parsed.data).length === 0) throw new Error('未能識別RVD數據格式');
+                    rvdData = parsed.data;
+                    document.getElementById('drop-rvd').classList.replace('drop-zone', 'bg-green-50');
+                    document.getElementById('drop-rvd').innerHTML = `<p class="text-green-700 font-bold">✅ RVD 數據已載入：${parsed.count}個月份</p><p class="text-[10px] text-green-600">最新原始月份：${parsed.latestSourceYM || '-'}；已自動沿用至：${parsed.extendedToYM || parsed.latestSourceYM || '-'}</p>`;
+                    calculateValuation();
+                } catch (err) { 
+                    console.error(err);
+                    alert("RVD讀取錯誤：請確認已上載RVD原始xls/xlsx，或簡表格式 YYYY-MM, ABC, DE, ALL"); 
+                }
+            };
+            reader.readAsBinaryString(file);
+        }
+
+        function parseRVDNumber(v) {
+            if (v === null || v === undefined) return null;
+            if (typeof v === 'number' && isFinite(v)) return v;
+            let s = String(v).replace(/[*＊,\s]/g, '').trim();
+            if (s === '' || s === '-' || s === '—' || s === '(' || s === ')') return null;
+            s = s.replace(/[()]/g, '');
+            const n = parseFloat(s);
+            return isFinite(n) ? n : null;
+        }
+        function isLikelyDateCell(v) {
+            if (v instanceof Date) return true;
+            if (typeof v === 'number') return v > 20000;
+            return /^\d{4}[-\/]\d{1,2}/.test(String(v).trim());
+        }
+        function ymToDate(ym) { const [y,m] = String(ym).split('-').map(Number); return new Date(y, m - 1, 1); }
+        function dateToYM(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; }
+        function addOneMonthYM(ym) { const d = ymToDate(ym); d.setMonth(d.getMonth() + 1); return dateToYM(d); }
+        function compareYM(a, b) { return String(a).localeCompare(String(b)); }
+        function currentYM() { return dateToYM(new Date()); }
+
+        function parseRVDRows(rows) {
+            const simple = {};
+            rows.forEach(r => {
+                if (!r || r.length < 4 || !isLikelyDateCell(r[0])) return;
+                const ym = getYYYYMM(r[0]);
+                const abc = parseRVDNumber(r[1]);
+                const de = parseRVDNumber(r[2]);
+                const all = parseRVDNumber(r[3]);
+                if (ym && (abc !== null || de !== null || all !== null)) simple[ym] = {ABC: abc || 0, DE: de || 0, DEF: de || 0, ALL: all || 0};
+            });
+            if (Object.keys(simple).length >= 3) return finalizeRVDData(simple);
+
+            const headerRowIndex = rows.findIndex(r => r && r.some(c => String(c).includes('A, B & C')) && r.some(c => String(c).includes('D & E')));
+            if (headerRowIndex < 0) return finalizeRVDData({});
+            const headerRow = rows[headerRowIndex];
+            const allHeaderRow = rows.find(r => r && (r.some(c => String(c).includes('所有類別')) || r.some(c => String(c).includes('All Classes')))) || headerRow;
+            const findHeaderCol = (row, needle) => row.findIndex(c => String(c).replace(/\s+/g,' ').trim().includes(needle));
+            const abcCol = findHeaderCol(headerRow, 'A, B & C') + 1;
+            const deCol = findHeaderCol(headerRow, 'D & E') + 1;
+            let allCol = findHeaderCol(allHeaderRow, '所有類別');
+            if (allCol < 0) allCol = findHeaderCol(allHeaderRow, 'All Classes');
+            allCol = allCol + 1;
+
+            let yearCol = -1, monthCol = -1, dataStart = -1;
+            for (let r = headerRowIndex + 1; r < rows.length; r++) {
+                const row = rows[r] || [];
+                for (let c = 0; c < row.length; c++) {
+                    const y = parseRVDNumber(row[c]);
+                    if (y && y >= 1900 && y <= 2100) {
+                        for (let mcol = c + 1; mcol < Math.min(row.length, c + 10); mcol++) {
+                            const m = parseInt(parseRVDNumber(row[mcol]));
+                            if (m >= 1 && m <= 12) { yearCol = c; monthCol = mcol; dataStart = r; break; }
+                        }
+                    }
+                    if (dataStart >= 0) break;
+                }
+                if (dataStart >= 0) break;
+            }
+            if (yearCol < 0 || monthCol < 0 || abcCol <= 0 || deCol <= 0 || allCol <= 0) return finalizeRVDData({});
+            const data = {};
+            let currentYear = null;
+            for (let r = dataStart; r < rows.length; r++) {
+                const row = rows[r] || [];
+                const y = parseRVDNumber(row[yearCol]);
+                if (y && y >= 1900 && y <= 2100) currentYear = parseInt(y);
+                const m = parseInt(parseRVDNumber(row[monthCol]));
+                if (!currentYear || !(m >= 1 && m <= 12)) continue;
+                const abc = parseRVDNumber(row[abcCol]);
+                const de = parseRVDNumber(row[deCol]);
+                const all = parseRVDNumber(row[allCol]);
+                if (abc === null && de === null && all === null) continue;
+                const ym = `${currentYear}-${String(m).padStart(2,'0')}`;
+                data[ym] = {ABC: abc || 0, DE: de || 0, DEF: de || 0, ALL: all || 0};
+            }
+            return finalizeRVDData(data);
+        }
+        function finalizeRVDData(data) {
+            const keys = Object.keys(data).sort();
+            if (keys.length === 0) return {data:{}, count:0, latestSourceYM:null, extendedToYM:null};
+            const latestSourceYM = keys[keys.length - 1];
+            let extendedToYM = latestSourceYM;
+            const todayYM = currentYM();
+            while (compareYM(extendedToYM, todayYM) < 0) {
+                const nextYM = addOneMonthYM(extendedToYM);
+                data[nextYM] = {...data[latestSourceYM]};
+                extendedToYM = nextYM;
+            }
+            return {data, count:Object.keys(data).length, latestSourceYM, extendedToYM};
+        }
+        function getRVDIndex(ym, rvdClass, fallback) {
+            if (!ym) return fallback;
+            const cls = rvdClass === 'DEF' ? 'DE' : rvdClass;
+            if (rvdData[ym] && parseRVDNumber(rvdData[ym][cls]) !== null && rvdData[ym][cls] > 0) return rvdData[ym][cls];
+            const available = Object.keys(rvdData).filter(k => compareYM(k, ym) <= 0 && rvdData[k] && rvdData[k][cls] > 0).sort();
+            if (available.length > 0) return rvdData[available[available.length - 1]][cls];
+            return fallback;
+        }
+
+        function handleComp(file) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const json = XLSX.utils.sheet_to_json(XLSX.read(e.target.result, {type:'binary'}).Sheets[XLSX.read(e.target.result, {type:'binary'}).SheetNames[0]], {defval:""});
+                    comparables = json.map((r, i) => {
+                        let opMatch = String(r['OP_DATE'] || '').match(/\d{4}/);
+                        let stNo = String(r['ST_NO_FRM'] || '').trim();
+                        let stName = String(r['ST_E_NAME'] || '').trim();
+                        let eName = String(r['EST_E_NAME'] || '').trim();
+                        let bldEName = String(r['BLD_E_NAME'] || '').trim();
+                        let cName = String(r['EST_C_NAME'] || '').trim();
+                        let bldCName = String(r['BLD_C_NAME'] || '').trim();
+                        // 屋苑名稱顯示次序：EST_E_NAME → BLD_E_NAME → EST_C_NAME → BLD_C_NAME
+                        let finalEstate = eName || bldEName || cName || bldCName || '未命名屋苑';
+                        let phaseStr = String(r['PHASE'] || '').trim();
+                        
+                        return {
+                            id: i, 
+                            isActive: true, 
+                            estate: finalEstate,
+                            estEName: eName,
+                            bldEName: bldEName,
+                            estCName: cName,
+                            bldCName: bldCName,
+                            phase: phaseStr,
+                            block: r['BLOCK'], 
+                            floor: parseInt(r['FLOOR'])||0, 
+                            unit: r['UNIT'], 
+                            area: parseFloat(r['TOTNFA'])||0, 
+                            unitPrice: parseFloat(r['NET_PSF'])||0, 
+                            yyyymm: getYYYYMM(r['INST_DATE']),
+                            date: r['INST_DATE'], 
+                            year: opMatch ? parseInt(opMatch[0]) : 0,
+                            street: (stNo + ' ' + stName).trim(),
+                            remark: r['REMARK2'] || '',
+                            view: '樓景', 
+                            height: null,
+                            factors: {} 
+                        };
+                    }).sort((a,b) => a.estate.localeCompare(b.estate));
+                    
+                    uniqueEstates = [...new Set(comparables.map(c => c.estate))];
+                    estateGroupSettings = {};
+                    uniqueEstates.forEach(est => estateGroupSettings[est] = {loc:0, fac:0, height:2.8, checked:true});
+                    
+                    document.getElementById('drop-comp').classList.replace('drop-zone', 'bg-green-50');
+                    document.getElementById('drop-comp').innerHTML = `<p class="text-green-700 font-bold">✅ 成功讀取 ${comparables.length} 宗成交</p>`;
+                    
+                    renderEstateSettingsUI(); 
+                    renderTable(); 
+                    calculateValuation();
+                } catch (err) { alert("讀取失敗，請確保已另存為 .xlsx"); }
+            };
+            reader.readAsBinaryString(file);
+        }
+
+        function updateViewSettingsUI() {
+            const subV = document.getElementById('sub-view').value;
+            const container = document.getElementById('view-settings-container');
+            container.innerHTML = '';
+            VIEWS.filter(v => v !== subV).forEach(v => {
+                container.innerHTML += `<div><label class="text-[10px] truncate">對象: ${v} (%)</label><input type="number" id="view-adj-${v}" value="0" step="0.5" class="store" onchange="calculateValuation()"></div>`;
+            });
+            calculateValuation();
+        }
+
+        function escapeHTML(value) {
+            return String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;'}[ch]));
+        }
+        function jsAttr(value) { return escapeHTML(JSON.stringify(String(value ?? ''))); }
+        function toggleEstateCollapse(est) { estateCollapsed[est] = !estateCollapsed[est]; renderTable(); calculateValuation(); }
+
+        function renderEstateSettingsUI() {
+            const container = document.getElementById('estate-settings-container');
+            container.innerHTML = '';
+            uniqueEstates.forEach(est => {
+                const s = estateGroupSettings[est];
+                const estHTML = escapeHTML(est);
+                const estArg = jsAttr(est);
+                container.innerHTML += `<div class="bg-white p-2 rounded border border-gray-200">
+                    <div class="flex items-center space-x-2 border-b pb-1 mb-1">
+                        <input type="checkbox" ${s.checked?'checked':''} onchange="toggleEstateGroup(${estArg}, this.checked)" class="w-4 h-4 cursor-pointer">
+                        <span class="font-bold text-purple-800 text-[11px] truncate flex-1" title="${estHTML}">${estHTML}</span>
+                    </div>
+                    <div class="grid grid-cols-3 gap-1 text-[9px]">
+                        <div><label>地點%</label><input type="number" step="0.5" value="${s.loc}" onchange="estateGroupSettings[${estArg}].loc=parseFloat(this.value)||0;calculateValuation()"></div>
+                        <div><label>設施%</label><input type="number" step="0.5" value="${s.fac}" onchange="estateGroupSettings[${estArg}].fac=parseFloat(this.value)||0;calculateValuation()"></div>
+                        <div><label>預設樓底</label><input type="number" step="0.1" value="${s.height}" onchange="estateGroupSettings[${estArg}].height=parseFloat(this.value)||2.8;calculateValuation()"></div>
+                    </div>
+                </div>`;
+            });
+        }
+        function renderTable() {
+            const body = document.getElementById('comp-body');
+            body.innerHTML = '';
+            if (comparables.length === 0) {
+                body.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-gray-500">尚未載入成交數據</td></tr>';
+                return;
+            }
+            uniqueEstates = [...new Set(comparables.map(c => c.estate))];
+            uniqueEstates.forEach(est => {
+                if (!(est in estateCollapsed)) estateCollapsed[est] = false;
+                const rows = comparables.map((c, i) => ({c, i})).filter(x => x.c.estate === est);
+                const activeCount = rows.filter(x => x.c.isActive).length;
+                const collapsed = !!estateCollapsed[est];
+                const estHTML = escapeHTML(est);
+                const estArg = jsAttr(est);
+                body.innerHTML += `<tr class="bg-blue-100 border-t-2 border-blue-300 no-print">
+                    <td class="p-2 text-center">
+                        <button type="button" onclick="toggleEstateCollapse(${estArg})" class="w-7 h-7 rounded bg-blue-700 text-white font-bold hover:bg-blue-800" title="${collapsed ? '展開' : '收起'}${estHTML}成交">${collapsed ? '+' : '−'}</button>
+                    </td>
+                    <td class="p-2 font-bold text-blue-900" colspan="6">
+                        <span>${estHTML}</span>
+                        <span class="ml-2 text-[11px] text-blue-700 bg-white px-2 py-0.5 rounded">${rows.length}宗成交｜已採用 ${activeCount}宗</span>
+                        <span class="ml-2 text-[10px] text-gray-500">按 +/- 展開或收藏個別成交</span>
+                    </td>
+                </tr>`;
+                if (collapsed) return;
+                rows.forEach(({c, i}) => {
+                    let remarkHTML = c.remark ? `<div class="text-[10px] text-red-500 font-bold mt-1">備註: ${escapeHTML(c.remark)}</div>` : '';
+                    let phaseHTML = c.phase ? ` <span class="text-xs text-purple-600 bg-purple-100 px-1 rounded">Phase ${escapeHTML(c.phase)}</span>` : '';
+                    body.innerHTML += `<tr id="tr-${i}" class="border-b transition-colors ${c.isActive ? 'hover:bg-blue-50' : 'opacity-40 bg-gray-100 no-print'}">
+                        <td class="p-2 text-center no-print"><input type="checkbox" ${c.isActive?'checked':''} onchange="comparables[${i}].isActive=this.checked;calculateValuation()" class="w-4 h-4 cursor-pointer"></td>
+                        <td class="p-2"><div class="font-bold text-blue-900">${escapeHTML(c.estate)}${phaseHTML}</div><div class="text-[11px]">Blk ${escapeHTML(c.block)} ${escapeHTML(c.floor)}/F ${escapeHTML(c.unit)}</div><div class="text-[10px] text-gray-500">${escapeHTML(c.street)}</div></td>
+                        <td class="p-2 text-[11px] text-gray-700">${escapeHTML(c.date)}<br>${escapeHTML(c.area)} sf<br>OP: ${escapeHTML(c.year)}${remarkHTML}</td>
+                        <td class="p-2 font-mono font-bold text-gray-600">$${Math.round(c.unitPrice).toLocaleString()}</td>
+                        <td class="p-2 space-y-1"><select onchange="updateComp(${i}, 'view', this.value)" class="border p-1 rounded text-[11px] w-full bg-white">${VIEWS.map(v => `<option value="${v}" ${c.view === v ? 'selected' : ''}>${v}</option>`).join('')}</select><input type="number" step="0.1" value="${c.height !== null ? c.height : ''}" placeholder="覆蓋樓底(m)" class="border p-1 rounded text-[11px] w-full" onchange="updateComp(${i}, 'height', this.value)"></td>
+                        <td class="p-2 text-[10px] text-gray-500 font-mono leading-tight" id="adj-detail-${i}">-</td>
+                        <td class="p-2 text-right"><div class="font-bold text-lg text-blue-700 font-mono" id="adj-price-${i}">-</div><div class="text-[9px] text-gray-400 mt-1">權重: <span id="adj-weight-${i}">-</span></div></td>
+                    </tr>`;
+                });
+            });
+        }
+
+        function toggleEstateGroup(est, chk) {
+            estateGroupSettings[est].checked = chk;
+            comparables.forEach(c => { if(c.estate === est) c.isActive = chk; });
+            renderTable(); calculateValuation();
+        }
+
+        function updateComp(i, field, val) { 
+            comparables[i][field] = (field === 'height') ? (val === "" ? null : parseFloat(val)) : val; 
+            calculateValuation(); 
+        }
+
+        function calculateValuation() {
+            saveToStorage();
+            if (comparables.length === 0) return;
+
+            // Subject Info
+            const sArea = parseFloat(document.getElementById('sub-area').value) || 0;
+            const subDateYM = getYYYYMM(document.getElementById('sub-date').value);
+            const rvdClass = document.getElementById('sub-rvd-class').value;
+            const rvdFallback = parseFloat(document.getElementById('rvd-fallback').value) || 380;
+            const subRvd = getRVDIndex(subDateYM, rvdClass, rvdFallback);
+
+            const sF = parseInt(document.getElementById('sub-floor').value) || 0;
+            const sY = parseInt(document.getElementById('sub-year').value) || 0;
+            const sH = parseFloat(document.getElementById('sub-height').value) || 2.8;
+            const sV = document.getElementById('sub-view').value;
+
+            // Global Adjustment Rates
+            const adjAge = parseFloat(document.getElementById('adj-age').value) / 100;
+            const adjFloor = parseFloat(document.getElementById('adj-floor').value) / 100;
+            const adjHeight = parseFloat(document.getElementById('adj-height').value) / 100;
+            const adjSize = parseFloat(document.getElementById('adj-size').value) / 100; // Size Rate
+            const avgMode = document.getElementById('avg-mode') ? document.getElementById('avg-mode').value : 'weighted';
+
+            let results = [], sumWeightedPrice = 0, sumWeights = 0, estateStats = {};
+
+            comparables.forEach((comp, i) => {
+                if (!comp.isActive || comp.unitPrice <= 0) return;
+                const estSet = estateGroupSettings[comp.estate];
+                const compRvd = getRVDIndex(comp.yyyymm, rvdClass, rvdFallback);
+                
+                // Adjustment Factors
+                const tFac = subRvd / compRvd;
+                const fFac = 1 + ((sF - comp.floor) * adjFloor);
+                const aFac = 1 + ((sY - comp.year) * (adjAge * -1));
+                const activeHeight = comp.height !== null ? comp.height : estSet.height;
+                const hFac = 1 + (((sH - activeHeight) * 10) * adjHeight);
+                
+                // Size Factor (面積大過主體 -> 正數調算)
+                const sFac = 1 + (((comp.area - sArea) / 10) * adjSize);
+                
+                let vFac = 1;
+                if (comp.view !== sV) {
+                    const viewInput = document.getElementById(`view-adj-${comp.view}`);
+                    if(viewInput) vFac = 1 + (parseFloat(viewInput.value) / 100);
+                }
+                const eFac = (1 + estSet.loc/100) * (1 + estSet.fac/100);
+
+                // Total
+                const totalFac = tFac * fFac * aFac * hFac * sFac * vFac * eFac;
+                const adjPrice = comp.unitPrice * totalFac;
+                const weight = 1 / (Math.abs(1 - totalFac) + 0.05); 
+                
+                // 儲存計算結果，供 CSV 匯出與 UI 顯示（即使該屋苑暫時被收藏亦可匯出）
+                comp.adjustedPrice = adjPrice;
+                comp.weight = weight;
+                comp.factors = { tFac, fFac, aFac, hFac, sFac, vFac, eFac, totalFac };
+
+                results.push({ i, adjPrice, weight, totalFac, estate: comp.estate });
+            });
+
+            const rawAvg = results.reduce((a,b) => a + b.adjPrice, 0) / (results.length || 1);
+            
+            results.forEach(res => {
+                const isOutlier = Math.abs(res.adjPrice - rawAvg) / rawAvg > 0.15;
+                comparables[res.i].isOutlier = isOutlier;
+                sumWeightedPrice += res.adjPrice * res.weight;
+                sumWeights += res.weight;
+                
+                const tr = document.getElementById(`tr-${res.i}`);
+                if(tr) {
+                    tr.classList.toggle('outlier', isOutlier);
+                    document.getElementById(`adj-price-${res.i}`).innerText = `$ ${Math.round(res.adjPrice).toLocaleString()}`;
+                    document.getElementById(`adj-weight-${res.i}`).innerText = res.weight.toFixed(2);
+                    
+                    const f = comparables[res.i].factors;
+                    document.getElementById(`adj-detail-${res.i}`).innerHTML = 
+                        `T:${f.tFac.toFixed(2)} V:${f.vFac.toFixed(2)} S:${f.sFac.toFixed(2)} E:${f.eFac.toFixed(2)}<br>` +
+                        `F:${f.fFac.toFixed(2)} A:${f.aFac.toFixed(2)} H:${f.hFac.toFixed(2)}<br>` +
+                        `<b>Total: ${f.totalFac.toFixed(3)}x</b>`;
+                }
+
+                if(!estateStats[res.estate]) estateStats[res.estate] = { sum: 0, n: 0 };
+                estateStats[res.estate].sum += res.adjPrice;
+                estateStats[res.estate].n++;
+            });
+
+            if (results.length > 0) {
+                const weightedAvg = sumWeightedPrice / sumWeights;
+                const simpleAvg = rawAvg;
+                const selectedAvg = (avgMode === 'simple') ? simpleAvg : weightedAvg;
+                const avgLabel = document.getElementById('avg-unit-price-label');
+                if (avgLabel) avgLabel.innerText = (avgMode === 'simple') ? '普通平均調整尺價' : '加權平均調整尺價';
+                document.getElementById('avg-unit-price').innerText = `$ ${Math.round(selectedAvg).toLocaleString()}`;
+                document.getElementById('total-value').innerText = `$ ${Math.round(selectedAvg * parseFloat(document.getElementById('sub-area').value)).toLocaleString()}`;
+                
+                const breakdown = document.getElementById('estate-breakdown');
+                breakdown.innerHTML = '';
+                for (let est in estateStats) {
+                    breakdown.innerHTML += `<div class="bg-gray-800 p-2 rounded">
+                        <div class="text-gray-400 text-[10px] truncate">${est} (${estateStats[est].n}宗)</div>
+                        <div class="text-white font-bold">$${Math.round(estateStats[est].sum/estateStats[est].n).toLocaleString()}</div>
+                    </div>`;
+                }
+                updateChart(results);
+            }
+        }
+
+        function updateChart(results) {
+            const ctx = document.getElementById('valuationChart').getContext('2d');
+            if (valuationChart) valuationChart.destroy();
+            valuationChart = new Chart(ctx, {
+                type: 'scatter',
+                data: {
+                    datasets: [{
+                        label: '成交分布 (原價 vs 調整後)',
+                        data: results.map(r => ({x: comparables[r.i].unitPrice, y: r.adjPrice})),
+                        backgroundColor: 'rgba(21, 128, 61, 0.7)',
+                        pointRadius: 5,
+                        pointHoverRadius: 8
+                    }]
+                },
+                options: { scales: { x: {title: {display:true, text:'原成交尺價'}}, y: {title: {display:true, text:'調整後尺價'}} } }
+            });
+        }
+
+        // --- 優化版 CSV 匯出 (包含 Size Factor 與 Footnote) ---
+        function exportToCSV() {
+            if(comparables.length === 0) { alert("沒有數據可以匯出"); return; }
+            calculateValuation();
+            
+            let csv = "Estate,Phase,Block,Floor,Unit,Street,Remark,Date,OP Year,Area,Original Price,View,Height,Time Factor,Floor Factor,Age Factor,Height Factor,Size Factor,View Factor,Estate Factor,Total Factor,Adjusted Price,Notes\n";
+            
+            comparables.filter(c => c.isActive).forEach(c => {
+                const isOutlier = c.isOutlier ? "Outlier" : "";
+                const adjPrice = isNaN(parseFloat(c.adjustedPrice)) ? "0" : Math.round(c.adjustedPrice);
+                
+                const estSet = estateGroupSettings[c.estate];
+                const activeHeight = c.height !== null ? c.height : estSet.height;
+                const f = c.factors || {tFac:1, fFac:1, aFac:1, hFac:1, sFac:1, vFac:1, eFac:1, totalFac:1};
+                
+                const safeStreet = c.street.replace(/,/g, " ");
+                const safeEstate = c.estate.replace(/,/g, " ");
+                const safeRemark = c.remark.replace(/,/g, " ");
+                
+                csv += `${safeEstate},${c.phase},${c.block},${c.floor},${c.unit},${safeStreet},${safeRemark},${c.date},${c.year},${c.area},${c.unitPrice},${c.view},${activeHeight},`;
+                csv += `${f.tFac.toFixed(3)},${f.fFac.toFixed(3)},${f.aFac.toFixed(3)},${f.hFac.toFixed(3)},${f.sFac.toFixed(3)},${f.vFac.toFixed(3)},${f.eFac.toFixed(3)},${f.totalFac.toFixed(3)},`;
+                csv += `${adjPrice},${isOutlier}\n`;
+            });
+
+            csv += "\n\n";
+            csv += "--- Valuation Assumptions & Adjustments Footnotes ---\n";
+            csv += `Subject Property:,${document.getElementById('sub-address').value.replace(/,/g, " ")}\n`;
+            csv += `Valuation Date:,${document.getElementById('sub-date').value}\n`;
+            csv += `Subject Floor:,${document.getElementById('sub-floor').value}\n`;
+            csv += `Subject Year Built:,${document.getElementById('sub-year').value}\n`;
+            csv += `Subject Area:,${document.getElementById('sub-area').value} sq.ft.\n`;
+            csv += `Subject Height:,${document.getElementById('sub-height').value}m\n`;
+            csv += `Subject View:,${document.getElementById('sub-view').value}\n`;
+            csv += `Subject RVD Class:,${document.getElementById('sub-rvd-class').value}\n\n`;
+            
+            csv += `Adjustment - Age:,${document.getElementById('adj-age').value}% per year difference\n`;
+            csv += `Adjustment - Floor:,${document.getElementById('adj-floor').value}% per floor difference\n`;
+            csv += `Adjustment - Height:,${document.getElementById('adj-height').value}% per 0.1m difference\n`;
+            csv += `Adjustment - Size:,${document.getElementById('adj-size').value}% per 10 sq.ft. difference\n`;
+            
+            const subV = document.getElementById('sub-view').value;
+            VIEWS.filter(v => v !== subV).forEach(v => {
+                let adjVal = document.getElementById(`view-adj-${v}`) ? document.getElementById(`view-adj-${v}`).value : 0;
+                csv += `Adjustment - View (${v} compared to ${subV}):,${adjVal}%\n`;
+            });
+
+            const blob = new Blob(["\ufeff" + csv], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(blob);
+            link.download = `Valuation_Comparable_Table_${getYYYYMM(new Date())}.csv`;
+            link.click();
+        }
+
+        // --- 儲存工具 ---
+        function saveToStorage() {
+            const data = {};
+            document.querySelectorAll('.store').forEach(el => data[el.id] = el.value);
+            localStorage.setItem('val_v61_settings', JSON.stringify(data));
+        }
+        function loadFromStorage() {
+            const saved = JSON.parse(localStorage.getItem('val_v61_settings') || '{}');
+            for(let id in saved) { if(document.getElementById(id)) document.getElementById(id).value = saved[id]; }
+        }
+        function clearStorage() { localStorage.removeItem('val_v61_settings'); location.reload(); }
+        function getYYYYMM(d) {
+            if(!d) return null;
+            let date = typeof d === 'number' ? new Date(Math.round((d-25569)*86400*1000)) : new Date(d);
+            return isNaN(date) ? null : `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}`;
+        }
+    </script>
+</body>
+</html>
